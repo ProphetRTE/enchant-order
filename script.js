@@ -1,482 +1,773 @@
-var item = "boots";
-var enchants = [
-	["Protection", 4],
-	["Respiration", 3],
-	["Aqua Affinity", 1],
-	["Thorns", 3],
-	["Unbreaking", 3],
-	["Mending", 1],
-];
+const ENCHANTMENT_LIMIT_INCLUSIVE = 10;
 
-enchants = [
-	["Protection", 4],
-	["Thorns", 3],
-	["Unbreaking", 3],
-	["Mending", 1],
-	["Feather Falling", 4],
-	["Depth Strider", 3],
-	["Soul Speed", 3],
-];
+let worker;
+let start_time;
+let total_steps;
+let total_tries;
+let languageJson;
+let languageId;
+let enchants_list;
 
-var overrides = [
-	['helmet'	, 'armor_1_14_1'],
-	['chestplate'	, 'armor_1_14_1'],
-	['leggings'	, 'armor_1_14_1'],
-	['boots'	, 'armor_1_14_1'],
-	['turtle_shell'	, 'armor_1_14_1'],
-	['bow'		, 'bow_1_11'],
-];
+const languages = {
+    //key   : ['LABEL', cache-id],
+    'en'    : ['English', 3],
+    'pt-BR' : ['Português', 4],
+    'ru-RU' : ['Русский', 3],
+    'ua-UA' : ['Українська', 2],
+    'be-BY' : ['Беларуская', 1],
+    'zh-CN' : ['中文', 4],
+    'nl'    : ['Nederlands', 3],
+    'de'    : ['Deutsch', 2],
+    'es-ES' : ['Español', 5],
+    'it-IT' : ['Italiano', 3],
+    'ja-JP' : ['日本語', 1],
+};
+window.onload = function() {
 
-var w;
-var start;
-var in_progress = false;
-var total_steps;
-var total_tries;
+    worker = new Worker("work.js?6");
+    worker.onmessage = function(event) {
+        if (event.data.msg === "complete") {
+            afterFoundOptimalSolution(event.data);
+        }
+    };
+    worker.postMessage({
+        msg: "set_data",
+        data: data
+    });
 
-window.onload = function(){
+    buildItemSelection();
+    buildEnchantmentSelection();
+    buildCalculateButton();
+    buildFilters();
+    setupLanguage();
+};
 
-	w = new Worker('work.js?2');
-
-	w.onmessage = function(e){
-		var x = performance.now();
-		var elapsed = x - start;
-		console.log(x, 'msg back to master', e.data);
-
-		if (e.data.msg == 'stage_complete'){
-			stage_complete(e.data);
-		}
-
-		if (e.data.msg == 'complete'){
-			completed(e.data);
-		}
-	};
-
-	w.postMessage({
-		'msg' : 'set_data',
-		'data' : data,
-	});
-
-	for (var i in data.items){
-		$('<option/>', { value : i }).text(data.items[i]).appendTo('select#item');
-	}
-
-	$('select#item').change(function(){
-		var opt = $('select#item option:selected').val();
-		if (opt){
-			build_enchant_list(opt);
-			build_overrides(opt);
-		}else{
-			$('#enchants').hide();
-			$('#overrides').hide();
-		}
-	});
-
-	$('#enchants table').on('click', 'button', function() {
-		button_clicked($(this));
-	});
-
-	$('#calculate').click(calculate);
-
-	if (0){
-		start = performance.now();
-		w.postMessage({
-			'msg' : 'process',
-			'item' : item,
-			'enchants' : enchants,
-		});
-	}
-
-	if (0){
-		for (var i in data.items){
-			var img = $('<img>').attr('src', './images/'+i+'.gif').attr('width', 16).attr('height', 16);
-			var lbl = $('<span>').text(data.items[i]);
-
-			$('#right').append($('<p>').append(img).append(lbl));
-		}
-	}
-
-	setup_darkmode();
+function buildCalculateButton() {
+    $("#calculate").click(calculate);
 }
 
-function build_enchant_list(item){
-
-	//console.log('build list of enchants for '+item);
-
-	$('#enchants table').html('');
-
-
-	//
-	// first, filter out which enchants apply to this item
-	//
-
-	var enchants = [];
-	var max_max = 0;
-
-	for (var i in data.enchants){
-
-		var enchant = data.enchants[i];
-		var allow = false;
-
-		for (var j=0; j<enchant.items.length; j++){
-			if (enchant.items[j] == item){
-				allow = true;
-				break;
-			}
-		}
-
-		if (i.substr(0, 5) == "Curse") allow = false;
-
-		if (allow){
-			enchants.push(i);
-
-			var e_info = data.enchants[i];
-			max_max = Math.max(max_max, parseInt(e_info.levelMax));
-		}
-	}
-
-
-	//
-	// get overrides
-	//
-
-	var o_flags = get_override_flags();
-
-
-	//
-	// next, group them by incompatible enchants
-	//
-
-	var groups = [];
-
-	while (enchants.length){
-		var candidate = enchants.shift();
-		var group = [candidate];
-
-		var next = [];
-		for (var i=0; i<enchants.length; i++){
-			var e = enchants[i];
-			var e_info = data.enchants[e];
-
-			var is_incompatible = false;
-			for (var j=0; j<e_info.incompatible.length; j++){
-				if (e_info.incompatible[j] == candidate){
-					is_incompatible = true;
-					break;
-				}
-			}
-
-			if (is_overriden(e, o_flags)) is_incompatible = false;
-
-			if (is_incompatible){
-				group.push(e);
-			}else{
-				next.push(e);
-			}
-		}
-
-		groups.push(group);
-		enchants = next;
-	}
-
-
-	//
-	// finally, build some HTML
-	//
-
-	var g_toggle = true;
-
-	for (var i=0; i<groups.length; i++){
-		var group = groups[i];
-
-		for (var j=0; j<group.length; j++){
-			var enchant = group[j];
-			var e_info = data.enchants[enchant];
-			var max = parseInt(e_info.levelMax);
-
-			var row = $('<tr>');
-			row.addClass(g_toggle ? 'group1' : 'group2');
-
-			row.append($('<td>').append(enchant));
-			for (var k=1; k<=max_max; k++){
-				if (max >= k){
-					row.append($('<td>').append($('<button>').append(k).addClass('off').data({
-						'level' : k,
-						'enchant' : enchant,
-					})));
-				}else{
-					row.append($('<td>'));
-				}
-			}
-
-			//p.css({'backgroundColor' : g_toggle ? '#eee' : '#ddd'});
-			$('#enchants table').append(row);
-
-			//console.log(enchant, g_toggle);
-
-			if (enchant == 'Riptide'){
-
-				row = $('<tr>');
-				row.addClass(g_toggle ? 'group1' : 'group2');
-
-				row.append($('<td>'));
-				row.append($('<td>').attr('colspan', max_max).append($('<i>').append("Channeling and Loyalty can be used together but neither can be used with Riptide")));
-
-				$('#enchants table').append(row);
-			}
-		}
-
-		g_toggle = !g_toggle;
-	}
-
-	$('#enchants').show();
+function buildFilters() {
+    $("#allow_incompatible").change(allowIncompatibleChanged);
+    $("#allow_many").change(allowManyChanged);
 }
 
-function get_override_flags(){
-	return {
-		'armor_1_14_1'	: !!$('#armor_1_14_1').is(':checked'),
-		'bow_1_11'	: !!$('#bow_1_11').is(':checked'),
-	};
+function buildItemSelection() {
+    data.items.forEach(item_namespace => {
+        const item_listbox_metadata = { value: item_namespace };
+        const item_listbox = $("<option/>", item_listbox_metadata);
+        item_listbox.text(item_namespace).appendTo("select#item");
+    });
 }
 
-function is_overriden(enchant, o_flags){
+function incompatibleGroupFromNamespace(enchantment_namespace) {
+    const enchantments_metadata = data.enchants;
 
-	if (enchant == 'Protection'		&& o_flags.armor_1_14_1) return true;
-	if (enchant == 'Blast Protection'	&& o_flags.armor_1_14_1) return true;
-	if (enchant == 'Fire Protection'	&& o_flags.armor_1_14_1) return true;
-	if (enchant == 'Projectile Protection'	&& o_flags.armor_1_14_1) return true;
+    const incompatible_namespaces_queue = [enchantment_namespace];
+    const incompatible_namespaces = [];
 
-	if (enchant == 'Infinity'		&& o_flags.bow_1_11) return true;
-	if (enchant == 'Mending'		&& o_flags.bow_1_11) return true;
+    while (incompatible_namespaces_queue.length) {
+        const incompatible_namespace = incompatible_namespaces_queue.shift();
+        const incompatible_already_grouped = incompatible_namespaces.includes(incompatible_namespace);
 
-	return false;
+        if (!incompatible_already_grouped) {
+            incompatible_namespaces.push(incompatible_namespace);
+            const enchantment_metadata = enchantments_metadata[incompatible_namespace];
+            const new_incompatible_namespaces = enchantment_metadata.incompatible;
+
+            new_incompatible_namespaces.forEach(new_incompatible_namespace => {
+                const new_incompatible_already_grouped = incompatible_namespaces.includes(new_incompatible_namespace);
+                const new_incompatible_in_queue = incompatible_namespaces_queue.includes(new_incompatible_namespace);
+                const push_new_incompatible = !new_incompatible_already_grouped && !new_incompatible_in_queue;
+                if (push_new_incompatible) {
+                    incompatible_namespaces_queue.push(new_incompatible_namespace);
+                }
+            });
+        }
+    }
+
+    incompatible_namespaces.sort();
+    return incompatible_namespaces;
 }
 
+function buildEnchantList(item_namespace_chosen) {
+    const enchantments_metadata = data.enchants;
 
-function build_overrides(item){
+    $("#enchants table").html("");
 
-	$('#overrides p').html('');
+    //
+    // first, filter out which enchants apply to this item
+    //
 
-	for (var i=0; i<overrides.length; i++){
-		if (overrides[i][0] == item){
-			var o = overrides[i][1];
+    const item_enchantment_namespaces = [];
+    let enchantment_level_maxmax = 0;
 
-			if (o == 'armor_1_14_1'){
-				$('#overrides p').append('<label><input type="checkbox" id="armor_1_14_1" >Allow multiple Protection types (1.14.1 only)</label>');
-			}
-			if (o == 'bow_1_11'){
-				$('#overrides p').append('<label><input type="checkbox" id="bow_1_11" >Allow Mending & Infinity (1.11 only)</label>');
-			}
-		}
-	}
+    const enchantment_namespaces = Object.keys(enchantments_metadata);
+    enchantment_namespaces.forEach(enchantment_namespace => {
 
-	$('#overrides p input').change(function(){ build_enchant_list(item); });
+        const enchantment_metadata = enchantments_metadata[enchantment_namespace];
+        const item_namespaces = enchantment_metadata.items;
 
-	$('#overrides').show();
+        let allow_enchantment = false;
+        if (item_namespace_chosen === "book") {
+            allow_enchantment = true;
+        } else {
+            item_namespaces.forEach(item_namespace => {
+                if (item_namespace === item_namespace_chosen) {
+                    allow_enchantment = true;
+                }
+            });
+        }
+
+        if (allow_enchantment) {
+            const enchantment_max_level = enchantment_metadata.levelMax;
+            enchantment_level_maxmax = Math.max(enchantment_level_maxmax, enchantment_max_level);
+            item_enchantment_namespaces.push(enchantment_namespace);
+        }
+    });
+
+    //
+    // next, group them by incompatible enchants
+    //
+
+    const enchantment_groups = [];
+    const enchantments_grouped = [];
+
+    function filterEnchantmentGroup(enchantment_namespace) {
+        return item_enchantment_namespaces.includes(enchantment_namespace);
+    }
+
+    item_enchantment_namespaces.forEach(enchantment_namespace => {
+        const namespace_already_grouped = enchantments_grouped.includes(enchantment_namespace);
+        if (namespace_already_grouped) return;
+
+        let enchantment_group = incompatibleGroupFromNamespace(enchantment_namespace);
+        enchantment_group = enchantment_group.filter(filterEnchantmentGroup);
+
+        enchantment_group.forEach(enchantment_namespace => {
+            const enchantment_already_grouped = enchantments_grouped.includes(enchantment_namespace);
+            if (!enchantment_already_grouped) {
+                enchantments_grouped.push(enchantment_namespace);
+            }
+        });
+
+        enchantment_groups.push(enchantment_group);
+    });
+
+    let group_toggle_color = true;
+
+    enchantment_groups.forEach(enchantment_group => {
+        enchantment_group.forEach(enchantment_namespace => {
+            const enchantment_metadata = enchantments_metadata[enchantment_namespace];
+            const enchantment_max_level = enchantment_metadata.levelMax;
+            const enchantment_name = languageJson.enchants[enchantment_namespace];
+
+            const enchantment_row = $("<tr>");
+            enchantment_row.addClass(group_toggle_color ? "group1" : "group2");
+            enchantment_row.append($("<td>").append(enchantment_name));
+            for (let enchantment_level = 1; enchantment_level <= enchantment_level_maxmax; enchantment_level++) {
+                if (enchantment_max_level >= enchantment_level) {
+                    const enchantment_button_data = {
+                        level: enchantment_level,
+                        enchant: enchantment_name
+                    };
+                    const enchantment_button = $("<button>");
+                    enchantment_button.append(enchantment_level);
+                    enchantment_button.addClass("off");
+                    enchantment_button.addClass("level-button");
+                    enchantment_button.data(enchantment_button_data);
+
+                    const enchantment_row_append = $("<td>").append(enchantment_button);
+                    enchantment_row.append(enchantment_row_append);
+                } else {
+                    enchantment_row.append($("<td>"));
+                }
+            }
+
+            $("#enchants table").append(enchantment_row);
+        });
+
+        group_toggle_color = !group_toggle_color;
+    });
+
+    $("#enchants").show();
+    updateCalculateButtonState();
 }
 
-function completed(msg){
-
-	var x = performance.now();
-	var elapsed = Math.round((x - start) / 1000);
-
-	if (elapsed <= 1){
-		$('#timings').text('Completed in under a second, trying '+number_format(total_tries)+' combinations');
-	}else{
-		$('#timings').text('Completed in '+elapsed+' seconds, trying '+number_format(total_tries)+' combinations');
-	}
-
-	in_progress = false;
-
-	var names = {};
-	for (var i in msg.enchants){
-		var e = msg.enchants[i];
-		var e_info = data.enchants[msg.enchants[i].enchant];
-
-		names[i] = e_info.levelMax == "1" ? e.enchant : e.enchant + ' ' + e.level;
-	}
-	names['ITEM'] = data.items[msg.item];
-
-	//console.log(names);
-
-	$('#level-cost').text(msg.cost);
-	$('#steps').html('');
-
-	if (msg.tried == 0){
-		$('#error .lbl').text("Please select one or more enchantments");
-		$('#error').show();
-		return;
-	}
-
-	for (var i=0; i<msg.path.length; i++){
-
-		var n = i+1;
-		var left = expand_name(msg.path[i].left, names, msg);
-		var right = expand_name(msg.path[i].right, names, msg);
-
-		$('#steps').append($('<li>').html('Combine <i>'+left+'</i> with <i>'+right+'</i><br><small>(Cost: '+msg.path[i].cost+' levels)</small>'));
-
-	}
-
-	$('#solution').show();
+function doAllowIncompatibleEnchantments() {
+    const allow_incompatible_checkbox = $("#allow_incompatible");
+    return allow_incompatible_checkbox.is(":checked");
 }
 
-function expand_name(k, names, context){
-
-	var bits = k.split('|');
-
-	// just a single item is easy
-	if (bits.length == 1){
-		var icon = bits[0] == 'ITEM' ? context.item : 'book';
-		return '<img src="./images/'+icon+'.gif" class="icon"> '+names[bits[0]];
-	}
-
-
-	// for multiple items, make it fancy
-	var icon = 'book';
-	var lbl = 'Book';
-
-	if (bits[0] == 'ITEM'){
-		bits.shift();
-		icon = context.item;
-		lbl = names['ITEM'];
-	}
-
-	var parts = [];
-	for (var i=0; i<bits.length; i++){
-		parts.push(names[bits[i]]);
-	}
-		
-	var extra = parts.join(' + ');
-	if (icon != 'book') extra = 'w/ '+extra;
-
-	return '<img src="./images/'+icon+'.gif" class="icon"> '+lbl+' ('+extra+')';
+function doAllowManyEnchantments() {
+    const allow_many_checkbox = $("#allow_many");
+    return allow_many_checkbox.is(":checked");
 }
 
-function button_clicked(elm){
-
-	var b_data = elm.data();
-
-	// when we click on a button, we need to:
-	// 1) figure out if it's already on
-	// 2) if it is, turn it off (no longer using this enchant)
-	// 3) if it's not, turn it on and turn off any other button in the same enchant group (inc other levels of this enchant)
-
-	if (elm.attr('class') == 'on'){
-		elm.attr('class', 'off');
-	}else{
-		elm.attr('class', 'on');
-		$("#enchants button").filter(function(){ return $(this).data("enchant") == b_data.enchant && $(this).data("level") != b_data.level; }).attr('class', 'off');
-		var e_info = data.enchants[b_data.enchant];
-
-
-		// Treat these special: Channeling and Loyalty can be used together but neither can be used with Riptide
-
-		if (b_data.enchant == 'Channeling' || b_data.enchant == 'Loyalty'){
-			$("#enchants button").filter(function(){ return $(this).data("enchant") == 'Riptide'; }).attr('class', 'off');
-		}else if (b_data.enchant == 'Riptide'){
-			$("#enchants button").filter(function(){ return $(this).data("enchant") == 'Channeling' || $(this).data("enchant") == 'Loyalty'; }).attr('class', 'off');
-
-		}else{
-			if (is_overriden(b_data.enchant, get_override_flags())) return;
-
-			for (var i=0; i<e_info.incompatible.length; i++){
-				$("#enchants button").filter(function(){ return $(this).data("enchant") == e_info.incompatible[i]; }).attr('class', 'off');
-			}
-		}
-	}
+function allowIncompatibleChanged() {
+    const allow_incompatible = doAllowIncompatibleEnchantments();
+    if (!allow_incompatible) {
+        turnOffLevelButtons();
+    }
 }
 
-function calculate(){
-
-	// get list of enchants to use
-
-	var enchants = [];
-
-	$("#enchants button.on").each(function(idx, elm){
-		enchants.push([$(elm).data('enchant'), $(elm).data('level')]);
-	});
-
-	var item = $('select#item option:selected').val();
-
-	start_job(item, enchants);
+function allowManyChanged() {
+    const allow_many = doAllowManyEnchantments();
+    if (!allow_many) {
+        turnOffLevelButtons();
+    }
 }
 
-function start_job(item, enchants){
-
-	if (in_progress == true){
-		alert('calculation already in progress');
-		return;
-	}
-
-	if (enchants.length >= 6){
-		 if (navigator.userAgent.match(/Android/i)
-			|| navigator.userAgent.match(/iPhone/i)
-			|| navigator.userAgent.match(/iPad/i)){
-				$('#phone-warn').show();
-		}
-	}
-
-	in_progress = true;
-	total_steps = enchants.length;
-	total_tries = 0;
-	start = performance.now();
-
-	$('#solution').hide();
-	$('#error').hide();
-
-	$('#progress .lbl').text("Calculating stage 1 of "+total_steps);
-	$('#progress').show();
-
-	w.postMessage({
-		'msg' : 'process',
-		'item' : item,
-		'enchants' : enchants,
-	});
+function turnOffLevelButtons() {
+    const enchantment_buttons = $(".level-button");
+    turnOffButtons(enchantment_buttons);
 }
 
-function stage_complete(data){
+function buildEnchantmentSelection() {
+    $("select#item").change(function() {
+        const item_namespace_selected = $("select#item option:selected").val();
+        if (item_namespace_selected) {
+            buildEnchantList(item_namespace_selected);
+            $("#overrides").show();
+        } else {
+            $("#enchants").hide();
+            $("#overrides").hide();
+        }
+    });
 
-	total_tries = Math.max(total_tries, data.tries);
-
-	if (data.num < total_steps){
-		$('#progress .lbl').text("Calculating stage "+(data.num+1)+" of "+total_steps+" ("+number_format(data.tries)+" paths explored)");
-	}else{
-		$('#progress').hide();
-		$('#phone-warn').hide();
-	}
+    $("#enchants table").on("click", "button", function() {
+        levelButtonClicked($(this));
+    });
 }
 
-function number_format(x){
-	return Number(x).toLocaleString();
+function displayTime(time_milliseconds) {
+    let time_text;
+
+    if (time_milliseconds < 1) {
+        const time_microseconds = Math.round(time_milliseconds * 1000);
+        time_text = Math.round(time_microseconds) + languageJson.microseconds;
+    } else if (time_milliseconds < 1000) {
+        const time_round = Math.round(time_milliseconds);
+        time_text = pluralize(time_round, 'millisecond');
+    } else {
+        const time_seconds = Math.round(time_milliseconds / 1000);
+        time_text = pluralize(time_seconds, 'second');
+    }
+
+    return time_text;
+}
+
+function displayLevelsText(levels) {
+    let level_text;
+    level_text = pluralize(levels, 'level');
+    return level_text;
+}
+
+function pluralize(num, key_root) {
+
+    if (languageJson.use_russain_plurals) {
+      if ((num % 10 === 1) && (num < 10 || num > 15)) {
+        return String(num) + languageJson[key_root];
+      } else if ((num % 10 === 2 || num % 10 === 3 || num % 10 === 4) && (num < 10 || num > 15)) {
+        return String(num) + languageJson[key_root + '_low'];
+      } else {
+        return String(num) + languageJson[key_root + '_high'];
+      }
+    }
+
+    if (num === 1) {
+      return String(num) + languageJson[key_root];
+    } else {
+      return String(num) + languageJson[key_root + '_s'];
+    }
+}
+
+function displayXpText(xp, minimum_xp = -1) {
+    let xp_text = "";
+    if (minimum_xp >= 0) {
+        xp_text += commaify(minimum_xp) + "-";
+    }
+    xp_text += commaify(xp) + languageJson.xp;
+    return xp_text;
+}
+
+function commaify(n) {
+    let out = "";
+    let nstr = "" + n;
+    while (nstr.length > 3) {
+        out = "," + nstr.substr(nstr.length - 3) + out;
+        nstr = nstr.substr(0, nstr.length - 3);
+    }
+    return nstr + out;
+}
+
+function displayLevelXpText(levels, xp, minimum_xp = -1) {
+    const level_text = displayLevelsText(levels);
+    const xp_text = displayXpText(xp, minimum_xp);
+    return level_text + " (" + xp_text + ")";
+}
+
+function displayInstructionText(instruction) {
+    const left_item_obj = instruction[0];
+    const right_item_obj = instruction[1];
+    const levels = instruction[2];
+    const xp = instruction[3]
+    const work = instruction[4];
+
+    const left_item_text = displayItemText(left_item_obj);
+    const right_item_text = displayItemText(right_item_obj);
+
+    const instruction_text = languageJson.combine + " <i>" + left_item_text + "</i> " + languageJson.with + " <i>" + right_item_text + "</i>";
+    const cost_text = languageJson.cost + displayLevelXpText(levels, xp);
+    const prior_work_text = languageJson.prior_work_penalty + displayLevelsText(work);
+
+    return instruction_text + "<br><small>" + cost_text + ", " + prior_work_text + "</small>";
+}
+
+function displayEnchantmentsText(enchants) {
+    let count = enchants.length
+    //let max_level = data.enchants[enchants].levelMax;
+
+    let text = "";
+    if (count >= 1) text += "(";
+    enchants.forEach((enchant, index) => {
+        if (languageJson.enchants.hasOwnProperty(enchant)) {
+            text += languageJson.enchants[enchant];
+            if (data.enchants[enchant].levelMax > 1) {
+                text += ' ' + enchants_list.find(([entry]) => entry === enchant)[1]
+            }
+
+            if (index !== count - 1) text += ", ";
+        }
+
+    });
+    if (count >= 1) text += ")";
+
+    return text;
+}
+
+function displayItemText(item_obj) {
+
+    let item_namespace;
+    let enchantments_obj = [];
+    if (languageJson.enchants.hasOwnProperty(item_obj.I)) {
+        enchantments_obj.push(item_obj.I)
+        item_namespace = 'book'
+    } else if (typeof(item_obj.I) === 'string') {
+        item_namespace = item_obj.I
+    } else {
+        item_namespace = languageJson.enchants.hasOwnProperty(item_obj.L.I) ? 'book' : item_obj.L.I;
+        enchants = findEnchantments(item_obj)
+        enchantments_obj = enchants
+    }
+    if (typeof(item_namespace) === 'undefined') {
+        item_namespace = findItemNamespace(item_obj.L)
+    }
+    const icon_text = '<img src="./images/' + item_namespace + '.gif" class="icon">';
+    const items_metadata = languageJson.items;
+    const item_name = items_metadata[item_namespace];
+    const enchantments_text = displayEnchantmentsText(enchantments_obj);
+
+    return icon_text + " " + item_name + " " + enchantments_text;
+}
+
+function findItemNamespace(item) {
+    if (item.L.I) {
+        name = languageJson.enchants.hasOwnProperty(item.L.I) ? 'book' : item.L.I;
+    }
+    else {
+        findItemNamespace(item.L)
+    }
+    return name
+}
+
+function findEnchantments(item) {
+    let enchants = []
+    let child_enchants;
+    for (const key in item) {
+        if (key === "L" || key === "R") {
+            if (!item[key].I) {
+                child_enchants = findEnchantments(item[key])
+                child_enchants.forEach(enchant => {
+                    enchants.push(enchant);
+                })
+            } else {
+                enchants.push(item[key].I)
+            }
+        }
+    }
+    return enchants;
+}
+
+function updateTime(time_milliseconds) {
+    const timing_text = languageJson.completed_in + displayTime(time_milliseconds);
+    $("#timings").text(timing_text);
+    $("#timings").show();
 }
 
 
-function setup_darkmode(){
-
-	const darkModeToggle = document.getElementById('darkModeToggle');
-	const body = document.body;
-
-	darkModeToggle.addEventListener('click', function (){
-		body.classList.toggle('dark-mode');
-
-		// Save user preference in localStorage
-		if (body.classList.contains('dark-mode')){
-			localStorage.setItem('darkMode', 'enabled');
-			darkModeToggle.textContent = 'Light Mode';
-		}else{
-			localStorage.setItem('darkMode', 'disabled');
-			darkModeToggle.textContent = 'Dark Mode';
-		}
-	});
-
-	// Check user preference on page load
-	const userPreference = localStorage.getItem('darkMode');
-	if (userPreference === 'enabled'){
-		body.classList.add('dark-mode');
-		darkModeToggle.textContent = 'Light Mode';
-	}else{
-		body.classList.remove('dark-mode');
-		darkModeToggle.textContent = 'Dark Mode';
-	}
+function updateCumulativeCost(cumulative_levels, cumulative_xp, minimum_xp = -1) {
+    const cost_text = displayLevelXpText(cumulative_levels, cumulative_xp, minimum_xp);
+    const cost_header = $("#level-cost");
+    cost_header.text(cost_text);
 }
 
+function addInstructionDisplay(instruction) {
+    const display_text = displayInstructionText(instruction);
+    const solution_steps = $("#steps");
+    solution_steps.append($("<li>").html(display_text));
+}
+
+
+function afterFoundOptimalSolution(msg) {
+    $("#progress").hide();
+    $("#phone-warn").hide();
+    const instructions = msg.instructions;
+    const instructions_count = instructions.length;
+    enchants_list = msg.enchants
+
+    const current_time = performance.now();
+    const elapsed_time_milliseconds = current_time - start_time;
+    updateTime(elapsed_time_milliseconds);
+
+    const solution_section = $("#solution");
+    const solution_header = $("#solution-header");
+    const solution_steps = $("#steps");
+    const steps_header = $("#solution h3");
+
+    solution_steps.html("");
+    solution_section.show();
+
+    let minimum_xp;
+    if (instructions_count === 0) {
+        solution_header.html(languageJson.no_solution_found);
+        steps_header.html("");
+        updateCumulativeCost(0, 0);
+    } else {
+        steps_header.html(languageJson.steps);
+
+        const item = msg.item_obj;
+        const cumulative_levels = msg.extra[0];
+        minimum_xp = item.x;
+        const maximum_xp = msg.extra[1]; // UNUSED
+        updateCumulativeCost(cumulative_levels, maximum_xp, minimum_xp);
+
+        instructions.forEach(instruction => {
+            addInstructionDisplay(instruction);
+        });
+
+        if (minimum_xp && minimum_xp !== maximum_xp) {
+            $("#xp-range-note").show();
+        } else {
+            $("#xp-range-note").hide();
+        }
+    }
+}
+
+function enchantmentNamespaceFromStylized(enchantment_name) {
+    const enchantments_metadata = data.enchants;
+    const enchantment_namespaces = Object.keys(enchantments_metadata);
+
+    let namespace_match = "";
+    enchantment_namespaces.forEach(enchantment_namespace => {
+        const enchantment_name_check = languageJson.enchants[enchantment_namespace];
+        if (enchantment_name_check === enchantment_name) namespace_match = enchantment_namespace;
+    });
+
+    return namespace_match;
+}
+
+function buttonMatchesName(button, enchantment_name) {
+    const button_name = button.data("enchant");
+    return button_name === enchantment_name;
+}
+
+function buttonMatchesLevel(button, enchantment_level) {
+    const button_level = button.data("level");
+    return button_level === enchantment_level;
+}
+
+function filterButton(button, enchantment_name, enchantment_level = -1) {
+    const button_matches_name = buttonMatchesName(button, enchantment_name);
+    const button_matches_level = buttonMatchesLevel(button, enchantment_level);
+    return button_matches_name && !button_matches_level;
+}
+
+function turnOffButtons(buttons) {
+    buttons.addClass("off");
+    buttons.removeClass("on");
+    updateCalculateButtonState();
+}
+
+function turnOnButtons(buttons) {
+    buttons.addClass("on");
+    buttons.removeClass("off");
+}
+
+function filterEnchantmentButtons(incompatible_namespaces) {
+    const enchantments_metadata = data.enchants;
+    const enchantment_buttons = $("#enchants button");
+
+    incompatible_namespaces.forEach(incompatible_namespace => {
+        const incompatible_name = languageJson.enchants[incompatible_namespace];
+
+        const matching_buttons = enchantment_buttons.filter(function () {
+            const this_button = $(this);
+            return filterButton(this_button, incompatible_name);
+        });
+        turnOffButtons(matching_buttons);
+    });
+}
+
+function updateLevelButtonForOnState(level_button) {
+    const button_data = level_button.data();
+    const enchantments_metadata = data.enchants;
+    const enchantment_buttons = $("#enchants button");
+
+    turnOnButtons(level_button);
+
+    const enchantment_name = button_data.enchant;
+    const enchantment_level = button_data.level;
+
+    const matching_buttons = enchantment_buttons.filter(function () {
+        const this_button = $(this);
+        return filterButton(this_button, enchantment_name, enchantment_level);
+    });
+    turnOffButtons(matching_buttons);
+
+    const allow_incompatible = doAllowIncompatibleEnchantments();
+    if (!allow_incompatible) {
+        const enchantment_namespace = enchantmentNamespaceFromStylized(enchantment_name);
+        const enchantment_metadata = enchantments_metadata[enchantment_namespace];
+        const incompatible_namespaces = enchantment_metadata.incompatible;
+        filterEnchantmentButtons(incompatible_namespaces);
+    }
+}
+
+function isTooManyEnchantments(enchantment_count) {
+    const allow_many = doAllowManyEnchantments();
+    const many_selected = enchantment_count > ENCHANTMENT_LIMIT_INCLUSIVE;
+    return !allow_many && many_selected;
+}
+
+function levelButtonClicked(button_clicked) {
+    const button_is_on = button_clicked.hasClass("on");
+
+    if (button_is_on) {
+        turnOffButtons(button_clicked);
+    } else {
+        const enchantment_foundation = retrieveEnchantmentFoundation();
+        const enchantment_count = enchantment_foundation.length;
+        const is_too_many = isTooManyEnchantments(enchantment_count + 1);
+
+        if (is_too_many) {
+            let alert_text = "";
+            alert_text += languageJson.too_many_enchantments;
+            alert_text += languageJson.more_than + ENCHANTMENT_LIMIT_INCLUSIVE + languageJson.enchantments_are_not_recommended;
+            alert_text += languageJson.please_select_enchantments;
+            alert(alert_text);
+        } else {
+            updateLevelButtonForOnState(button_clicked);
+        }
+    }
+}
+
+function retrieveEnchantmentFoundation() {
+    const enchantment_foundation = [];
+    const buttons_on = $("#enchants button.on");
+
+    buttons_on.each(function(button_index, button) {
+        const enchantment_name = $(button).data("enchant");
+        const enchantment_level = $(button).data("level");
+        const enchantment_namespace = enchantmentNamespaceFromStylized(enchantment_name);
+        enchantment_foundation.push([enchantment_namespace, enchantment_level]);
+    });
+
+    return enchantment_foundation;
+}
+
+function retrieveCheapnessMode() {
+    return $('input[name="cheapness-mode"]:checked').val();
+}
+
+function retrieveSelectedItem() {
+    return $("select#item option:selected").val();
+}
+
+function updateCalculateButtonState() {
+    const enchantment_foundation = retrieveEnchantmentFoundation();
+    if (enchantment_foundation.length === 0) {
+        $("#calculate").attr("disabled", true);
+    } else {
+        $("#calculate").attr("disabled", false);
+    }
+}
+
+function calculate() {
+    const enchantment_foundation = retrieveEnchantmentFoundation();
+    const no_enchantments_selected = enchantment_foundation.length === 0;
+    if (no_enchantments_selected) return;
+
+    const cheapness_mode = retrieveCheapnessMode();
+    const item_namespace = retrieveSelectedItem();
+
+    startCalculating(item_namespace, enchantment_foundation, cheapness_mode);
+}
+
+function solutionHeaderTextFromMode(mode) {
+    let solution_header_text;
+    if (mode === "levels") {
+        solution_header_text = languageJson.optimal_solution_cumulative_levels;
+    } else if (mode === "prior_work") {
+        solution_header_text = languageJson.optimal_solution_prior_work;
+    }
+    return solution_header_text;
+}
+
+function updateSolutionHeader(mode) {
+    const solution_header_text = solutionHeaderTextFromMode(mode);
+    const solution_header = $("#solution-header");
+    solution_header.text(solution_header_text);
+}
+
+function startCalculating(item_namespace, enchantment_foundation, mode) {
+    if (enchantment_foundation.length >= 6) {
+        if (
+            navigator.userAgent.match(/Android/i) ||
+            navigator.userAgent.match(/iPhone/i) ||
+            navigator.userAgent.match(/iPad/i)
+        ) {
+            $("#phone-warn").show();
+        }
+    }
+
+    total_steps = enchantment_foundation.length;
+    total_tries = 0;
+    start_time = performance.now();
+
+    $("#solution").hide();
+    $("#error").hide();
+    updateSolutionHeader(mode);
+
+    worker.postMessage({
+        msg: "process",
+        item: item_namespace,
+        enchants: enchantment_foundation,
+        mode: mode
+    });
+    $("#progress .lbl").text(languageJson.calculating_solution);
+    $("#progress").show();
+}
+
+function languageChangeListener(){
+    const selectLanguage = document.getElementById('language');
+    selectLanguage.addEventListener('change', function() {
+        const selectedValue = selectLanguage.value;
+        changePageLanguage(selectedValue);
+    });
+}
+
+async function setupLanguage(){
+    for (const i in languages){
+        $("<option/>", {'value': i}).text(languages[i][0]).appendTo('#language');
+    }
+    defineBrowserLanguage();
+    languageChangeListener();
+}
+
+function defineBrowserLanguage(){
+    if (!localStorage.getItem("savedlanguage")) {
+        // language isn't saved and has to be detected
+        const browserLanguage = navigator.language || navigator.userLanguage;
+        if (languages[browserLanguage]){
+            changePageLanguage(browserLanguage);
+        } else {
+            changePageLanguage('en');
+        }
+    } else {
+        // language is saved, load from save
+        changePageLanguage(localStorage.getItem("savedlanguage"));
+    }
+}
+
+async function changePageLanguage(language){
+    if (!languages[language]){
+        console.error("Trying to switch to unknown language:", language);
+        return;
+    }
+
+    languageId = language;
+    languageJson = await loadJsonLanguage(language).then(languageData => { return languageData});
+    if (languageJson){
+        changeLanguageByJson(languageJson);
+        localStorage.setItem("savedlanguage", language);
+        // ^ Save language choice to localstorage
+    }
+}
+
+function loadJsonLanguage(language) {
+    const cache_key = languages[language][1];
+    return fetch('languages/'+language+'.json?'+cache_key)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Can\'t load language file');
+        }
+        return response.json();
+      })
+      .then(data => {
+        return data;
+      })
+      .catch(error => {
+        console.error('Language file error:', error);
+        return null;
+      });
+}
+
+
+function changeLanguageByJson(languageJson){
+    /* check for duplicate names */
+    const map = {};
+    for (let i in languageJson.enchants){
+        if (map[languageJson.enchants[i]]){
+            console.error("Duplicate string for enchant names (must be unique)", languageId, i, map[languageJson.enchants[i]]);
+        }
+        map[languageJson.enchants[i]] = i;
+    }
+
+    const h1Element = document.getElementsByTagName('h1')[0];
+    h1Element.textContent = languageJson.h1_title;
+
+    /* paragraphs */
+    const paragraphs = document.getElementsByTagName('p');
+    paragraphs[1].innerHTML = languageJson.paragraph_1;
+    paragraphs[2].innerHTML = languageJson.paragraph_2;
+    paragraphs[3].innerHTML = languageJson.paragraph_3;
+
+
+    /* selection */
+    const options = document.getElementById("item").getElementsByTagName("option");
+    let i = 1;
+
+    options[0].textContent = languageJson.choose_an_item_to_enchant;
+    data.items.forEach(item_namespace => {
+        options[i].textContent = languageJson.items[item_namespace];
+        i++;
+    });
+
+    /* other UI */
+    document.getElementById("override-incompatible").textContent = languageJson.checkbox_label_incompatible;
+    document.getElementById("override-max-number").textContent = languageJson.checkbox_label_max_number;
+
+    document.getElementById("calculate").textContent = languageJson.calculate;
+
+    document.getElementById("optimize-label").textContent = languageJson.optimize_for;
+    document.getElementById("optimize-xp").textContent = languageJson.radio_label_optimize_xp;
+    document.getElementById("optimize-pwp").textContent = languageJson.radio_label_optimize_pwp;
+
+    document.getElementById("total-cost-label").textContent = languageJson.total_cost;
+
+    document.getElementById("xp-range-note").textContent = languageJson.note;
+
+    $("select#item").change();
+    $("#solution").hide();
+    $("#error").hide();
+}
